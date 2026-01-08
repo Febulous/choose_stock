@@ -25,77 +25,146 @@ class StockSelectionTool:
         return main_themes
     
     def get_all_stocks(self):
-        """
-        获取所有A股股票数据
-        """
-        # 获取A股实时行情数据
-        stock_info = ak.stock_zh_a_spot_em()
-        return stock_info
+        try:
+            stock_info = ak.stock_zh_a_spot_em()
+            print(f"获取到列名: {list(stock_info.columns)}")
+            print(f"数据预览:\n{stock_info.head(3)}")
+            print(f"总市值列示例: {stock_info['总市值'].head(5) if '总市值' in stock_info.columns else '无此列'}")
+            print(f"换手率列示例: {stock_info['换手率'].head(5) if '换手率' in stock_info.columns else '无此列'}")
+            return stock_info
+        except Exception as e:
+            print(f"获取股票数据时出错: {e}")
+            return pd.DataFrame()
     
     def screen_by_volume_ratio(self, df):
         """
         根据量比筛选股票
-        akshare没有直接的量比数据，我们通过成交量变化来计算近似值
         """
-        # 计算量比近似值（当前成交量/过去5日平均成交量）
-        df['volume_ratio'] = df['成交量'] / df.groupby('代码')['成交量'].transform(lambda x: x.rolling(window=5).mean())
+        if df.empty:
+            return df
+            
+        # 检查必要列是否存在
+        required_cols = ['成交量', '代码']
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            print(f"缺少必要列: {missing_cols}")
+            return df
         
-        # 筛选量比>1.5的股票
-        df = df[df['volume_ratio'] > 1.5]
+        # 将成交量转换为数值类型
+        df = df.copy()
+        df['成交量'] = pd.to_numeric(df['成交量'], errors='coerce')
         
-        return df
+        # 计算过去5日平均成交量（这里简化为对当前成交量的处理）
+        # 实际应该获取历史数据来计算5日平均成交量
+        df = df.dropna(subset=['成交量'])
+        
+        # 由于无法获取历史数据，我们暂时跳过量比筛选
+        # 或者使用换手率作为替代指标
+        print(f"量比筛选前股票数量: {len(df)}")
+        return df  # 暂时返回所有股票，因为无法准确计算量比
     
     def screen_by_price_performance(self, df, min_change_pct=2.0):
         """
         根据价格表现筛选股票
         """
-        # 重命名列名以匹配tushare的数据结构
-        df_renamed = df.rename(columns={
-            '涨跌幅': 'pct_chg',
-            '代码': 'ts_code',
-            '名称': 'name',
-            '总市值': 'total_mv'
-        })
-        
-        # 将总市值转换为亿元单位
-        df_renamed['total_mv'] = df_renamed['total_mv'] / 10000  # 转换为亿
+        if df.empty:
+            return df
+            
+        # 检查必要列是否存在
+        if '涨跌幅' not in df.columns:
+            print("数据中不包含涨跌幅列")
+            return df
+            
+        # 将涨跌幅转换为数值类型
+        df = df.copy()
+        df['涨跌幅'] = pd.to_numeric(df['涨跌幅'], errors='coerce')
+        df = df.dropna(subset=['涨跌幅'])
         
         # 筛选涨幅>2%的股票
-        df_filtered = df_renamed[df_renamed['pct_chg'] > min_change_pct]
+        df_filtered = df[df['涨跌幅'] > min_change_pct]
+        
+        # 重命名列名以匹配后续处理
+        df_renamed = df_filtered.rename(columns={
+            '代码': 'ts_code',
+            '名称': 'name',
+            '涨跌幅': 'pct_chg'
+        })
+        
+        # 如果存在总市值列，进行处理
+        if '总市值' in df_renamed.columns:
+            df_renamed = df_renamed.copy()
+            df_renamed['总市值'] = pd.to_numeric(df_renamed['总市值'], errors='coerce')
+            # 将总市值转换为亿元单位 - 修正：除以1亿(100000000)，不是1万(10000)
+            df_renamed['total_mv'] = df_renamed['总市值'] / 100000000
+        else:
+            # 如果没有总市值数据，创建一个临时列
+            df_renamed['total_mv'] = 0.0
         
         # 按涨幅排序
-        df_filtered = df_filtered.sort_values('pct_chg', ascending=False)
+        df_renamed = df_renamed.sort_values('pct_chg', ascending=False)
         
-        return df_filtered
+        print(f"价格表现筛选后股票数量: {len(df_renamed)}")
+        return df_renamed
     
     def filter_by_market_value(self, df, min_mv=50, max_mv=300):
         """
         根据市值筛选股票（50-300亿）
         """
+        if df.empty:
+            return df
+            
+        # 检查市值列是否存在
+        if 'total_mv' not in df.columns:
+            print("数据中不包含总市值列")
+            return df
+            
+        # 将市值转换为数值类型
+        df = df.copy()
+        df['total_mv'] = pd.to_numeric(df['total_mv'], errors='coerce')
+        df = df.dropna(subset=['total_mv'])
+        print(f"市值数据统计: 最小值={df['total_mv'].min():.2f}, 最大值={df['total_mv'].max():.2f}")
+
         # 筛选市值在50-300亿之间的股票
-        df = df[(df['total_mv'] >= min_mv) & (df['total_mv'] <= max_mv)]
-        
-        return df
+        df_filtered = df[(df['total_mv'] >= min_mv) & (df['total_mv'] <= max_mv)]
+    
+        print(f"市值筛选后股票数量: {len(df_filtered)}")
+        return df_filtered
     
     def get_turnover_rate(self, df):
         """
         获取换手率数据
         """
-        # 如果原数据中没有换手率，我们使用akshare的其他接口获取
-        # 这里假设df中包含换手率数据，或者我们基于成交量和流通股本计算
-        if '换手率' not in df.columns:
-            # 临时添加换手率列，实际应用中需要从数据源获取
-            df['turnover_rate'] = 0.0
-        else:
+        # 如果数据中包含换手率列，则进行筛选
+        if '换手率' in df.columns:
+            df = df.copy()
+            # 处理换手率数据，可能包含百分号
+            df['换手率'] = df['换手率'].astype(str).str.replace('%', '', regex=False)
+            df['换手率'] = pd.to_numeric(df['换手率'], errors='coerce')
+            df = df.dropna(subset=['换手率'])
             df = df.rename(columns={'换手率': 'turnover_rate'})
-        
-        return df
+            print(f"换手率数据统计: 最小值={df['turnover_rate'].min():.2f}%, 最大值={df['turnover_rate'].max():.2f}%")
+
+            # 筛选换手率在3%-10%之间的股票
+            df_filtered = df[(df['turnover_rate'] >= 3) & (df['turnover_rate'] <= 10)]
+            print(f"换手率筛选后股票数量: {len(df_filtered)}")
+            return df_filtered
+        else:
+            print("数据中不包含换手率信息，跳过换手率筛选")
+            # 添加一个默认的换手率列
+            df = df.copy()
+            df['turnover_rate'] = 0.0
+            return df
     
     def check_ma_trend(self, symbol, days=20):
         """
         检查股票的均线趋势
         """
         try:
+            # 由于akshare的股票代码格式通常是6位数字，不需要前缀
+            # 如果代码包含SH/SZ前缀，需要去掉
+            if symbol.startswith(('SH', 'SZ')):
+                symbol = symbol[2:]
+            
             # 获取历史数据
             start_date = (datetime.now() - timedelta(days=days*2)).strftime('%Y%m%d')
             end_date = datetime.now().strftime('%Y%m%d')
@@ -106,12 +175,19 @@ class StockSelectionTool:
             if df.empty or len(df) < 20:
                 return False
             
+            # 确保收盘价是数值类型
+            df['收盘'] = pd.to_numeric(df['收盘'], errors='coerce')
+            df = df.dropna(subset=['收盘'])
+            
+            if len(df) < 20:
+                return False
+            
             # 计算均线
             df['ma5'] = df['收盘'].rolling(window=5).mean()
             df['ma10'] = df['收盘'].rolling(window=10).mean()
             df['ma20'] = df['收盘'].rolling(window=20).mean()
             
-            # 检查均线多头排列
+            # 检查最后一天的均线多头排列
             latest = df.iloc[-1]
             if pd.isna(latest['ma5']) or pd.isna(latest['ma10']) or pd.isna(latest['ma20']):
                 return False
@@ -134,13 +210,18 @@ class StockSelectionTool:
         all_stocks = self.get_all_stocks()
         print(f"获取到 {len(all_stocks)} 只股票数据")
         
-        # 1. 根据量比筛选
+        if all_stocks.empty:
+            print("无法获取股票数据")
+            return pd.DataFrame()
+        
+        # 1. 根据量比筛选（暂时跳过，因为无法准确计算）
         df_vol = self.screen_by_volume_ratio(all_stocks)
         print(f"量比>1.5的股票数量: {len(df_vol)}")
         
         # 2. 根据价格表现筛选
         df_price = self.screen_by_price_performance(df_vol, min_change_pct=2.0)
         print(f"涨幅>2%的股票数量: {len(df_price)}")
+
         
         # 3. 根据市值筛选
         df_mv = self.filter_by_market_value(df_price)
@@ -148,28 +229,28 @@ class StockSelectionTool:
         
         # 4. 获取换手率
         df_turnover = self.get_turnover_rate(df_mv)
-        # 筛选换手率在3%-10%之间的股票
-        if 'turnover_rate' in df_turnover.columns:
-            df_turnover = df_turnover[(df_turnover['turnover_rate'] >= 3) & 
-                                     (df_turnover['turnover_rate'] <= 10)]
-            print(f"换手率3%-10%的股票数量: {len(df_turnover)}")
-        else:
-            print("数据中不包含换手率信息，跳过换手率筛选")
+        print(f"最终进入均线检查的股票数量: {len(df_turnover)}")
         
         # 5. 检查均线趋势
         qualified_stocks = []
         count = 0
+        total_count = len(df_turnover)
+        
         for idx, row in df_turnover.iterrows():
             count += 1
-            if count % 50 == 0:  # 每处理50只股票打印一次进度
-                print(f"已检查 {count}/{len(df_turnover)} 只股票的均线趋势")
+            if count % 20 == 0 or count == total_count:  # 每处理20只股票或最后一只打印一次进度
+                print(f"已检查 {count}/{total_count} 只股票的均线趋势")
                 
             try:
-                # akshare的股票代码格式可能需要调整
-                symbol = row['ts_code']
+                # 获取股票代码
+                symbol = row.get('ts_code', '')
+                if pd.isna(symbol) or symbol == '':
+                    continue
+                    
                 if self.check_ma_trend(symbol):
                     qualified_stocks.append(row)
             except Exception as e:
+                print(f"处理股票 {row.get('name', 'Unknown')} 时出错: {e}")
                 continue
         
         df_final = pd.DataFrame(qualified_stocks)
@@ -222,32 +303,40 @@ def main():
         print("\n=== 今日筛选出的龙头股 ===")
         # 确保列存在后再显示
         display_cols = ['ts_code', 'name', 'pct_chg']
-        if 'volume_ratio' in selected_stocks.columns:
-            display_cols.append('volume_ratio')
-        if 'turnover_rate' in selected_stocks.columns:
-            display_cols.append('turnover_rate')
         if 'total_mv' in selected_stocks.columns:
             display_cols.append('total_mv')
+        if 'turnover_rate' in selected_stocks.columns:
+            display_cols.append('turnover_rate')
         
-        print(selected_stocks[display_cols].head(10))
+        #print(selected_stocks[display_cols].head(10))
+        print(selected_stocks[display_cols])
         
         # 获取用户资金量
-        capital = float(input("\n请输入您的资金量（万元）: ")) * 10000
-        
-        # 计算仓位管理
-        pos_mgmt = tool.position_management(capital)
-        print(f"\n=== 仓位管理建议 (总资金: {capital/10000:.0f}万元) ===")
-        print(f"首次建仓: {pos_mgmt['first_position_pct']*100}% ({pos_mgmt['first_position_amount']/10000:.1f}万元)")
-        print(f"加仓: {pos_mgmt['add_position_pct']*100}% ({pos_mgmt['add_position_amount']/10000:.1f}万元)")
-        print(f"最大单票仓位: {pos_mgmt['max_position_pct']*100}% ({pos_mgmt['max_position_amount']/10000:.1f}万元)")
-        
-        # 风控设置
-        risk_ctrl = tool.risk_control()
-        print(f"\n=== 风控设置 ===")
-        print(f"固定止损线: {risk_ctrl['stop_loss_pct']}%")
-        print(f"首次止盈位: {risk_ctrl['take_profit_pct']}%")
+        capital_input = input("\n请输入您的资金量（万元）: ")
+        if capital_input.strip():
+            capital = float(capital_input) * 10000
+            
+            # 计算仓位管理
+            pos_mgmt = tool.position_management(capital)
+            print(f"\n=== 仓位管理建议 (总资金: {capital/10000:.0f}万元) ===")
+            print(f"首次建仓: {pos_mgmt['first_position_pct']*100}% ({pos_mgmt['first_position_amount']/10000:.1f}万元)")
+            print(f"加仓: {pos_mgmt['add_position_pct']*100}% ({pos_mgmt['add_position_amount']/10000:.1f}万元)")
+            print(f"最大单票仓位: {pos_mgmt['max_position_pct']*100}% ({pos_mgmt['max_position_amount']/10000:.1f}万元)")
+            
+            # 风控设置
+            risk_ctrl = tool.risk_control()
+            print(f"\n=== 风控设置 ===")
+            print(f"固定止损线: {risk_ctrl['stop_loss_pct']}%")
+            print(f"首次止盈位: {risk_ctrl['take_profit_pct']}%")
+        else:
+            print("未输入资金量，跳过仓位管理")
     else:
         print("今日未筛选出符合条件的龙头股")
+        print("\n可能的原因及解决方案:")
+        print("1. 当前A股市场可能处于休市时间，没有实时数据")
+        print("2. 设置的筛选条件可能过于严格")
+        print("3. 市场整体表现不佳，没有满足条件的股票")
+        print("4. 建议尝试调整筛选条件，如降低涨幅要求")
 
 if __name__ == "__main__":
     main()
